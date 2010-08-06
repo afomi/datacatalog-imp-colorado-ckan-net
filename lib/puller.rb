@@ -1,3 +1,7 @@
+require "fileutils"
+require "uri"
+require "yaml"
+
 class Puller
   
   require 'open-uri'
@@ -8,76 +12,42 @@ class Puller
 
   def initialize(handler)
     @handler = handler
-    @cache_source_directory = File.dirname(__FILE__) + "/../cache/raw/source/"
-    @cache_org_directory    = File.dirname(__FILE__) + "/../cache/raw/org/"
+    @cache_source_directory = File.join(File.dirname(__FILE__), "/../cache/raw/source/")
+    @cache_org_directory    = File.join(File.dirname(__FILE__), "/../cache/raw/org/")
     FileUtils.mkdir_p @cache_source_directory
     FileUtils.mkdir_p @cache_org_directory
-  end
-  
-  def run
-    @common = {
+    
+     @common = {
       :catalog_name => "colorado.ckan.net",
       :catalog_url  => "http://colorado.ckan.net",
     }
-    
-    prepare_sources_and_orgs
-    process_organizations(@orgs)
-    process_sources(@sources)
   end
   
-  
-  # == SOURCES
-  
-  def prepare_sources_and_orgs
-    @source_refs = grab_source_index_data
+  def run
+    source_data = grab_source_data
     
-    @sources = []
-    @orgs    = []
+    sources = build_sources(source_data)
+    orgs = build_orgs(source_data)
     
-    @source_refs.each do |source|
+    process_organizations(orgs)
+    process_sources(sources)
+  end
+  
+  def grab_source_data
+    source_data = []
+
+    grab_source_index_data.each do |source|
       raw_source = grab_one_source(source)
-      
-      #raise raw_source.inspect
-            
-      source_hash = {
-      :title       => raw_source["title"],
-      :description => raw_source["notes"],
-      :url         => raw_source["url"],
-      :license     => raw_source["license"],
-      :downloads   => standardize_source_downloads(raw_source["resources"]),
-      :custom      => build_source_tags(raw_source["tags"]),
-      :frequency   => raw_source["extras"]["update_frequency"],
-      # :source_type => "",
-      # :documentation_url => "",
-      # :license_url       => "",
-      # :released          => "",
-      # :period_start      => "",
-      # :period_end        => "",
-      }
-      
-      source_hash.merge!(@common)    
-      @sources << source_hash
-      
-      org_hash = {
-        :name              => raw_source["extras"]["agency"],
-        :acronym           => "",
-        :url               => 'http:' + URI.parse(raw_source["url"]).host,
-        :organization      => { :name => "Colorado" },
-        :description       => "",
-        :org_type          => "not-for-profit",
-      }
-      org_hash = org_hash.merge(@common)
-      @orgs << org_hash
+      source_data << raw_source
     end
     
+    source_data
   end
 
   def grab_source_index_data
-    url          = "http://colorado.ckan.net/api/rest/package"
+    url = "http://colorado.ckan.net/api/rest/package"
     fetched_data = open(url).read
-    yaml         = YAML::load(fetched_data)
-    puts "Found " + yaml.length.to_s + " source(s)"
-    return yaml
+    YAML::load(fetched_data)
   end
   
   def grab_one_source(source_name)
@@ -88,56 +58,137 @@ class Puller
 
   private
 
+  def build_sources(data)
+    sources = []
+    data.each do |raw_source|
+      source_metadata = {
+      :title        => raw_source["title"],
+      :description  => raw_source["notes"],
+      :url          => raw_source["url"],
+      :license      => raw_source["license"],
+      :downloads    => standardize_source_downloads(raw_source["resources"]),
+      :custom       => build_custom_tags(raw_source["tags"]),
+      :frequency    => raw_source["extras"]["update_frequency"],
+      #:organization => { :name => raw_source["Agency"] },
+      :organization => { :name => get_name(raw_source) },
+      :source_type  => standardize_source_type(raw_source["resources"][0]["format"]),
+      # :documentation_url => "",
+      # :license_url       => "",
+      # :released          => "",
+      # :period_start      => "",
+      # :period_end        => "",
+      }
 
-  def process_organizations(orgs)
-    orgs.uniq!.each do |org|
-      puts org.inspect
-      puts org[:name]
-      unless org[:name] == "All" or org[:name] == nil
-        @handler.organization(org)
-      end
+      source_metadata.merge!(@common)    
+      sources << source_metadata
     end
+
+    sources
   end
   
+  def build_orgs(data)
+    orgs = []
+    
+    data.each do |raw_source|
+      org_hash = {
+        :name              => get_name(raw_source),
+        #:names             => [],
+        :acronym           => "",
+        :url               => get_url(raw_source),
+        :organization      => { :name => "Colorado" },
+        :description       => "",
+        :org_type          => "governmental",
+      }
+      org_hash.merge!(@common)
+      orgs << org_hash
+    end
+
+    orgs.uniq
+  end
+
+  def process_organizations(orgs)
+    orgs.each do |org|
+      @handler.organization(org)
+    end
+  end
+
   def process_sources(sources)
     sources.each do |source|
       @handler.source(source)
     end
   end
-  
-  # Args:
-  # Array of hashes containing downloads
-  # Returns: 
-  # Array of hashes with valid "formats", without "description"
+
   def standardize_source_downloads(downloads = [])
-    
     arr = []
     downloads.each do |download|
-      if download["format"] == "REST"
-        download["format"] = "api"
-      elsif download["format"] == "APP"
-        download["format"] = "interactive"
+      format = case download["format"]
+        when "REST" then "api"
+        when "APP" then "interactive"
       end
-      
+
       download.delete("description")
       arr << download
     end
     
-    return arr
+    arr
   end
   
-  def build_source_tags(tags = [])
-    arr  = []
+  def standardize_source_type(source_format)
+    source_type = case source_format
+      when "APP" then "interactive"
+      else "dataset"
+    end
+  end
+  
+  def build_custom_tags(tags = [])
+    custom = {}
+    key = 0
+    
     tags.each do |tag|
-      arr << {
+      custom.merge!(key.to_s => {
         :label       => tag,
         :description => "tag",
         :type        => "tag",
         :value       => tag,
-       }
+        }
+      )
+       key += 1
     end
     
-    return arr
+    custom
+  end
+  
+  def get_name(data)
+    name = data["extras"]["agency"]
+    
+    if name.nil?
+      name = data["maintainer"]
+    end
+    
+    if name == "All"
+      name = "Colorado"
+    elsif name == "RTD"
+      name = "Regional Transportation District (RTD)"
+    end
+    
+    name.strip
+  end
+  
+  def get_names(data)
+    names = []
+    
+    names << data["extras"]["agency"]
+    names << data["maintainer"]
+    
+    names.compact.uniq
+  end
+  
+  def get_url(data)
+    if data[:name] == "U.S. Census Bureau"
+      return ''
+    end
+    
+    'http://' + URI.parse(data["url"]).host
   end
 
 end
