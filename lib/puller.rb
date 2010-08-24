@@ -27,7 +27,7 @@ class Puller
     source_data = grab_source_data
     
     sources = build_sources(source_data)
-    orgs = build_orgs(source_data)
+    orgs    = build_orgs(source_data)
     
     process_organizations(orgs)
     process_sources(sources)
@@ -55,7 +55,6 @@ class Puller
     yaml = YAML::load(fetched_data)
   end
 
-
   private
 
   def build_sources(data)
@@ -69,14 +68,8 @@ class Puller
       :downloads    => standardize_source_downloads(raw_source["resources"]),
       :custom       => build_custom_tags(raw_source["tags"]),
       :frequency    => raw_source["extras"]["update_frequency"],
-      #:organization => { :name => raw_source["Agency"] },
       :organization => { :name => get_name(raw_source) },
       :source_type  => standardize_source_type(raw_source["resources"][0]["format"]),
-      # :documentation_url => "",
-      # :license_url       => "",
-      # :released          => "",
-      # :period_start      => "",
-      # :period_end        => "",
       }
 
       source_metadata.merge!(@common)    
@@ -87,23 +80,28 @@ class Puller
   end
   
   def build_orgs(data)
-    orgs = []
-    
+    org_hash = {}
+    orgs = []  
+
     data.each do |raw_source|
-      org_hash = {
+      name =  get_name(raw_source)
+
+      org_metadata = {
         :name              => get_name(raw_source),
-        #:names             => [],
+        :names             => get_names(raw_source),
         :acronym           => "",
         :url               => get_url(raw_source),
         :organization      => { :name => "Colorado" },
         :description       => "",
         :org_type          => "governmental",
       }
-      org_hash.merge!(@common)
-      orgs << org_hash
+      
+      org_metadata.merge!(@common)
+      org_hash.merge!(name => org_metadata)
     end
-
-    orgs.uniq
+    
+    org_hash.each_pair { |k,v| orgs << v}
+    orgs
   end
 
   def process_organizations(orgs)
@@ -171,16 +169,21 @@ class Puller
       name = "Regional Transportation District (RTD)"
     end
     
+    if name == "City of Arvada GIS"
+      name = "City of Arvada"
+    end
+    
     name.strip
   end
   
   def get_names(data)
     names = []
     
-    names << data["extras"]["agency"]
-    names << data["maintainer"]
+    names << data["extras"]["agency"].strip rescue nil
+    names << data["maintainer"].strip rescue nil
+    names << get_name(data)
     
-    names.compact.uniq
+    names.compact.uniq.delete_if {|x| x == "All" } 
   end
   
   def get_url(data)
